@@ -1,0 +1,66 @@
+import java.text.SimpleDateFormat
+import java.util.Date
+
+import org.apache.spark.{SparkConf, SparkContext}
+
+/**
+  * This is an application of computing the similarity of items
+  * It uses the Item-Based collaborative filtering algorithm,
+  * and it needs to enter two parameters
+  * The first arg should be the path of the input file,
+  * and the format of the file is (user,item)......
+  * The second arg should be the path of the output file,
+  * and the format of the file is (item1,item2,similarity)......
+  * Created by shang on 2017/3/27.
+  */
+object SimilarityCompute {
+
+  def main(args: Array[String]): Unit = {
+  
+	//    check that the args are valid
+    require(args.length == 2)
+	//    assign two args to the variable input and output
+    val input = args(0)
+    val output = args(1)
+  
+    val conf = new SparkConf().setAppName("SimilarityCompute").setMaster("local")
+    val sc = new SparkContext(conf)
+	
+    //  0 read content from input file (user, item)
+    val rdd1 = sc.textFile(input).map(line =>{
+      val split = line.split(",")
+      (split(0), split(1))
+    }).sortByKey()
+	
+    //  1 (user, item)join(user, item) => (user, (item1, item2))
+    val rdd2 = rdd1 join rdd1
+	
+    //  2 ((user1, user2), times)
+    val rdd3 = rdd2.map(data=>{(data._2, 1)}).reduceByKey(_+_)
+	
+    //  3 Diagonal matrix (item, timeOfItem1)
+    val rdd4 = rdd3.filter(f=>{f._1._1==f._1._2}).map(f=>{(f._1._1,f._2)})
+	
+    //  4 Non diagonal matrix (item1, (item1, item2, timesOfItem1AndItem2))
+    val rdd5 = rdd3.filter(f=>{f._1._1!=f._1._2}).map(f=>{(f._1._1,(f._1._1,f._1._2,f._2))})
+      
+	  //  5 (item1, ((item1, item2, times), timeOfItem1))
+      .join(rdd4)
+    
+	//  6 (item2, (item1, item2, timesOfItem1AndItem2, timeOfItem1))
+    val rdd6 = rdd5.map(f=> (f._2._1._2, (f._2._1._1, f._2._1._2, f._2._1._3, f._2._2)))
+    
+	//  7 (item2, ((item1, item2, timesOfItem1AndItem2, timeOfItem1),timeOfItem2)
+    val rdd7 = rdd6.join(rdd4)
+    
+	//  8 (item1, item2, timesOfItem1AndItem2, timeOfItem1, timeOfItem2)
+    val rdd8 = rdd7.map(f => (f._2._1._1,f._2._1._2,f._2._1._3,f._2._1._4,f._2._2))
+    
+	//  9 (item1, item2, similarity) (similarity = timesOfItem1AndItem2/sqrt(timeOfItem1*timeOfItem2))
+    val rdd9 = rdd8.map(f=> (f._1, f._2, (f._3 / Math.sqrt(f._4 * f._5)) )).sortBy(_._3, false)
+      .groupBy(_._1)
+    rdd9.saveAsTextFile(output + (new SimpleDateFormat("yyyy-MM-dd").format(new Date())))
+	  
+    sc.stop()
+  }
+}
